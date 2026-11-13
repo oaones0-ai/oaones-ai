@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.customization.oaones.generic.ai.AiMapper">
+
+    <!-- 兼容旧接口：仅解析已启用的默认连接器；没有默认标记时由 Java 选择首个启用项。 -->
+    <select id="getConfig" resultType="com.customization.oaones.generic.ai.AiConfig">
+        select id, connector_name as name, api_url as apiUrl, api_key as apiKey, model,
+               supported_types as supportedTypes,
+               request_params as requestParams, enabled, is_default as defaultConnector,
+               create_time as createTime, update_time as updateTime
+        from ${table}
+        where id = (
+            select min(x.id) from ${table} x
+            where x.is_default = 1 and x.enabled = 1
+        )
+    </select>
+
+    <select id="listConfigs" resultType="com.customization.oaones.generic.ai.AiConfig">
+        select id, connector_name as name, api_url as apiUrl, api_key as apiKey, model,
+               supported_types as supportedTypes,
+               request_params as requestParams, enabled, is_default as defaultConnector,
+               create_time as createTime, update_time as updateTime
+        from ${table}
+        order by is_default desc, enabled desc, id asc
+    </select>
+
+    <select id="getConfigById" resultType="com.customization.oaones.generic.ai.AiConfig">
+        select id, connector_name as name, api_url as apiUrl, api_key as apiKey, model,
+               supported_types as supportedTypes,
+               request_params as requestParams, enabled, is_default as defaultConnector,
+               create_time as createTime, update_time as updateTime
+        from ${table}
+        where id = #{id}
+    </select>
+
+    <select id="nextId" resultType="long">
+        select coalesce(max(id), 0) + 1 from ${table}
+    </select>
+
+    <insert id="insertConfig">
+        insert into ${table}
+            (id, connector_name, api_url, api_key, model, supported_types, request_params,
+             enabled, is_default, create_time, update_time)
+        values
+            (#{config.id}, #{config.name}, #{config.apiUrl}, #{config.apiKey}, #{config.model},
+             #{config.supportedTypes}, #{config.requestParams}, #{config.enabled}, #{config.defaultConnector},
+             #{config.createTime}, #{config.updateTime})
+    </insert>
+
+    <update id="updateConfig">
+        update ${table}
+        set connector_name = #{config.name},
+            api_url = #{config.apiUrl},
+            api_key = #{config.apiKey},
+            model = #{config.model},
+            supported_types = #{config.supportedTypes},
+            request_params = #{config.requestParams},
+            enabled = #{config.enabled},
+            update_time = #{config.updateTime}
+        where id = #{config.id}
+    </update>
+
+    <update id="updateEnabled">
+        update ${table}
+        set enabled = #{enabled}
+        where id = #{id}
+    </update>
+
+    <update id="setDefault">
+        update ${table}
+        set is_default = case when id = #{id} then 1 else 0 end
+    </update>
+
+    <update id="clearDefaults">
+        update ${table}
+        set is_default = 0
+    </update>
+
+    <select id="nextCallLogId" resultType="long">
+        select coalesce(max(id), 0) + 1 from ${table}
+    </select>
+
+    <insert id="insertCallLog">
+        insert into ${table}
+            (id, connector_id, connector_name, model, call_type, status, http_status,
+             prompt_tokens, completion_tokens, total_tokens, duration_ms, request_time, error_message)
+        values
+            (#{log.id}, #{log.connectorId}, #{log.connectorName}, #{log.model},
+             #{log.callType}, #{log.status}, #{log.httpStatus}, #{log.promptTokens},
+             #{log.completionTokens}, #{log.totalTokens}, #{log.durationMs},
+             #{log.requestTime}, #{log.errorMessage})
+    </insert>
+
+    <select id="getCallSummary" resultType="com.customization.oaones.generic.ai.AiCallSummary">
+        select count(*) as calls,
+               coalesce(sum(case when status = 'success' then 1 else 0 end), 0) as successCalls,
+               coalesce(sum(case when status = 'failed' then 1 else 0 end), 0) as failedCalls,
+               coalesce(sum(prompt_tokens), 0) as promptTokens,
+               coalesce(sum(completion_tokens), 0) as completionTokens,
+               coalesce(sum(total_tokens), 0) as totalTokens,
+               coalesce(avg(duration_ms), 0) as averageDurationMs,
+               count(distinct model) as modelCount
+        from ${table}
+    </select>
+
+    <!--
+      报表优先使用调用时记录的 AI 别名；旧日志只写了“默认 AI”时，
+      按 connector_id 关联连接器别名，避免把“默认 AI”当成真实 AI 汇总。
+    -->
+    <select id="listCallSummaries" resultType="com.customization.oaones.generic.ai.AiCallSummary">
+        select max(l.model) as model,
+               case
+                   when ltrim(rtrim(l.connector_name)) = N'默认 AI'
+                        or ltrim(rtrim(l.connector_name)) = ''
+                   then coalesce(nullif(ltrim(rtrim(c.connector_name)), ''), N'未记录 AI 别名')
+                   else ltrim(rtrim(l.connector_name))
+               end as connectorName,
+               count(*) as calls,
+               coalesce(sum(case when l.status = 'success' then 1 else 0 end), 0) as successCalls,
+               coalesce(sum(case when l.status = 'failed' then 1 else 0 end), 0) as failedCalls,
+               coalesce(sum(l.prompt_tokens), 0) as promptTokens,
+               coalesce(sum(l.completion_tokens), 0) as completionTokens,
+               coalesce(sum(l.total_tokens), 0) as totalTokens,
+               coalesce(avg(l.duration_ms), 0) as averageDurationMs,
+               max(l.request_time) as lastCallTime
+        from ${callLogTable} l
+        left join ${configTable} c on c.id = l.connector_id
+        group by case
+                     when ltrim(rtrim(l.connector_name)) = N'默认 AI'
+                          or ltrim(rtrim(l.connector_name)) = ''
+                     then coalesce(nullif(ltrim(rtrim(c.connector_name)), ''), N'未记录 AI 别名')
+                     else ltrim(rtrim(l.connector_name))
+                 end
+        order by calls desc, connectorName asc
+    </select>
+</mapper>
